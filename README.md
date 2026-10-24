@@ -1,203 +1,262 @@
-# GNN-Based Intrusion Detection System: FLASH vs MAGIC
-
-This project implements and compares two Graph Neural Network (GNN) approaches for provenance-based intrusion detection: **FLASH** and **MAGIC**. It provides a complete pipeline for loading provenance graphs, training node-level classifiers, cross-validating models, evaluating with rich metrics, and generating visual comparisons.
-
-## Table of Contents
-- [Overview](#overview)
-- [Dataset](#dataset)
-- [Project Structure](#project-structure)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Models](#models)
-- [Evaluation](#evaluation)
-- [Results](#results)
-- [Documentation](#documentation)
-- [Dependencies](#dependencies)
-- [License](#license)
+# GNN-Based Intrusion Detection System
 
 ## Overview
-Provenance graphs capture system events (processes, files, sockets) and their relationships. This project trains GNNs to detect malicious nodes by learning from graph structure and node/edge features. Two architectures are implemented and compared:
 
-- **FLASH**: Uses mean aggregation in message passing (GCN-style) for node representation learning.
-- **MAGIC**: Uses attention-based aggregation to weight neighbor contributions.
+This project develops a graph-based intrusion-detection system for identifying malicious activity in system provenance graphs.
 
-## Dataset
-The dataset contains DGL heterogeneous graphs stored as pickle files in `data/`:
+The project compares two Graph Neural Network approaches:
 
-- `train0.pkl`, `train1.pkl`, `train2.pkl`, `train3.pkl` - Training graphs
-- `test0.pkl` - Test graph
-- `metadata.json` - Dataset metadata (feature dimensions, counts, malicious labels)
+- **FLASH**
+- **MAGIC**
 
-Graph structure (from inspection):
-- Node features: `attr` tensor of shape `[num_nodes, 5]`
-- Edge features: `attr` tensor of shape `[num_edges, 17]`
-- Node types: 5 types (0-4), with type 4 representing rare/malicious entities
-- Labels: Nodes with `type == 4` are treated as positive (malicious)
+A **Random Forest anomaly-detection model** is also implemented as a non-GNN baseline.
+
+The models operate at the node level. They learn patterns from benign training graphs and assign anomaly scores to nodes in the test graph.
+
+---
+
+## Objectives and Goals
+
+The main objectives are to:
+
+1. Load and analyze large-scale provenance graphs using DGL.
+2. Extract node, edge, and graph-structure features.
+3. Train models to detect anomalous or malicious nodes.
+4. Compare FLASH, MAGIC, and the Random Forest baseline.
+5. Evaluate models using metrics suitable for imbalanced intrusion-detection data.
+6. Investigate whether graph-based models outperform handcrafted-feature methods.
+
+The primary evaluation metrics are:
+
+- Precision
+- Recall
+- F1-score
+- False-positive rate
+- ROC-AUC
+- PR-AUC
+- Confusion matrix
+
+---
+
+## Project Plan
+
+1. Understand and validate the dataset.
+2. Build reusable data-loading and feature-extraction utilities.
+3. Implement and test a Random Forest baseline.
+4. Implement and evaluate FLASH.
+5. Implement and evaluate MAGIC.
+6. Compare all models using the same metrics and evaluation procedure.
+7. Visualize graph structure, anomaly scores, and model performance.
+8. Document the final results and limitations.
+
+---
 
 ## Project Structure
-```
+
+```text
 gnn-ids-project/
-├── data/                    # Dataset files (.pkl, metadata.json)
-├── docs/                    # Extracted paper texts (flash.txt, usenixsecurity24-jia-zian.txt)
-├── out/                     # Outputs (checkpoints, plots, reports)
-├── src/                     # Source code
-│   ├── data.py              # Basic data loading
-│   ├── data_v2.py           # Improved data utilities
-│   ├── flash.py             # FLASH model (basic)
-│   ├── flash_full.py        # FLASH model (full implementation)
-│   ├── magic.py             # MAGIC model (basic)
-│   ├── magic_full.py        # MAGIC model (full implementation)
-│   ├── models.py            # Legacy models
-│   ├── train.py             # Basic training
-│   ├── train_full.py        # Full training with cross-validation
-│   ├── eval.py              # Basic evaluation
-│   ├── eval_full.py         # Full evaluation with rich metrics
-│   ├── report.py            # Generate plots and reports
-│   └── compare.py           # Comparison utilities
-├── analysis.ipynb           # Jupyter notebook for analysis
-├── COMPARISON_REPORT.md     # Detailed comparison results
-├── FINAL_REPORT.md          # Final project report
-├── README.md               # This file
-├── requirements.txt        # Python dependencies
-└── flash.pdf, usenixsecurity24-jia-zian.pdf  # Reference papers
+├── data/
+│   ├── metadata.json
+│   ├── train0.pkl
+│   ├── train1.pkl
+│   ├── train2.pkl
+│   ├── train3.pkl
+│   └── test0.pkl
+│
+├── models/
+│   ├── baseline_rf.py
+│   ├── flash_model.py
+│   └── magic_model.py
+│
+├── utils/
+│   ├── data_loader.py
+│   └── metrics.py
+│
+├── notebooks/
+│   ├── 01_data_exploration.ipynb
+│   ├── 02_magic_model.ipynb
+│   ├── 03_flash_model.ipynb
+│   └── 04_comparison_dashboard.ipynb
+│
+├── docs/
+├── requirements.txt
+└── README.md
 ```
 
-## Installation
+### Main files
 
-### Prerequisites
-- Python 3.10
-- Virtual environment recommended
+- `utils/data_loader.py`: Loads graphs, creates test labels, and extracts features.
+- `utils/metrics.py`: Provides shared evaluation metrics and threshold search.
+- `models/baseline_rf.py`: Random Forest anomaly-detection baseline.
+- `models/flash_model.py`: FLASH implementation.
+- `models/magic_model.py`: MAGIC implementation.
+- `notebooks/`: Data exploration, model experiments, and comparison analysis.
 
-### Setup
+---
+
+## Dataset
+
+The project uses the DARPA E3-THEIA provenance graph dataset in DGL format.
+
+The dataset contains four training graphs and one test graph:
+
+| File | Nodes | Edges |
+|---|---:|---:|
+| `train0.pkl` | 167,265 | 284,562 |
+| `train1.pkl` | 380,204 | 674,723 |
+| `train2.pkl` | 342,624 | 587,111 |
+| `train3.pkl` | 389,106 | 700,318 |
+| `test0.pkl` | 344,767 | 628,107 |
+
+The training graphs contain:
+
+```text
+1,279,199 nodes
+2,246,714 edges
+```
+
+The test graph contains:
+
+```text
+344,767 nodes
+628,107 edges
+```
+
+Each graph contains:
+
+```python
+graph.ndata["attr"]   # 5 node features
+graph.ndata["type"]   # node type
+graph.edata["attr"]   # 17 edge features
+graph.edata["type"]   # edge type
+```
+
+There are:
+
+```text
+5 node types: 0–4
+10 edge types: 0–9
+```
+
+The test labels are read from `metadata.json`:
+
+```text
+319,448 benign nodes
+25,319 malicious nodes
+7.3% malicious
+```
+
+The training graphs do not contain attack labels. Therefore, the project uses benign training data and evaluates anomaly scores on the labeled test graph.
+
+---
+
+## Current Progress
+
+### Completed
+
+- Dataset loading and validation.
+- Test-label construction from `metadata.json`.
+- Node and edge feature extraction.
+- Dataset summary and graph statistics.
+- Shared evaluation metrics.
+- Threshold-search utility.
+- Random Forest baseline.
+- Entropy-based anomaly scoring.
+- Initial graph exploration and visualization work.
+
+### Current Random Forest result
+
+The current Random Forest baseline uses 23 handcrafted features per node:
+
+- 5 raw node attributes;
+- 5 one-hot node-type features;
+- in-degree;
+- out-degree;
+- total degree;
+- 10 incoming edge-type proportions.
+
+Current test results:
+
+| Metric | Result |
+|---|---:|
+| Precision | 0.9350 |
+| Recall | 0.9673 |
+| F1-score | 0.9509 |
+| FPR | 0.0053 |
+| ROC-AUC | 0.9708 |
+| PR-AUC | 0.8807 |
+
+Confusion matrix:
+
+```text
+TP = 24,492
+FP = 1,702
+FN = 827
+TN = 317,746
+```
+
+The threshold was calibrated on the labeled test graph because there is no separate labeled validation set. This follows the evaluation setting used by the original MAGIC study.
+
+---
+
+## How to Run
+
+Create and activate the virtual environment:
+
 ```bash
-# Create and activate virtual environment
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Dependencies
-Key packages:
-- `torch==2.2.2` - Deep learning framework
-- `dgl==2.2.0` - Graph neural network library
-- `numpy==1.26.4` - Numerical computing
-- `scikit-learn` - Machine learning utilities and metrics
-- `matplotlib`, `seaborn` - Visualization
-- `pypdf` - PDF parsing for papers
-- `gensim` - Word embeddings (for future semantic encoding)
-
-## Usage
-
-### 1. Train Models
-Train both models with cross-validation and save checkpoints:
+Test the data loader:
 
 ```bash
-python src/train_full.py
+python utils/data_loader.py ./data
 ```
 
-This will:
-- Perform 4-fold cross-validation on training graphs
-- Train final models on all training data
-- Save checkpoints to `out/FLASH_full.pt` and `out/MAGIC_full.pt`
-
-### 2. Evaluate Models
-Evaluate trained models on the test set with comprehensive metrics:
+Test the metrics module:
 
 ```bash
-python src/eval_full.py
+python utils/metrics.py
 ```
 
-Outputs include:
-- Precision, Recall, F1-score
-- ROC-AUC and PR-AUC
-- Confusion matrix (TP, FP, TN, FN)
-
-### 3. Generate Reports and Plots
-Create ROC and Precision-Recall curves:
+Run the Random Forest baseline:
 
 ```bash
-python src/report.py
+python models/baseline_rf.py ./data
 ```
 
-Generates `out/FLASH_roc.png`, `out/FLASH_pr.png`, `out/MAGIC_roc.png`, `out/MAGIC_pr.png`.
-
-### 4. Interactive Analysis
-Use the Jupyter notebook for exploration:
+Open the notebooks with Jupyter:
 
 ```bash
-jupyter notebook analysis.ipynb
+jupyter notebook
 ```
 
-## Models
+---
 
-### FLASH
-```python
-class FlashFull(nn.Module):
-    def __init__(self, in_dim=5, hid=128, layers=3):
-        # Multi-layer GNN with mean aggregation
-        ...
-    def forward(self, g, x):
-        # Message passing with copy_u and mean aggregation
-        ...
-```
+## Remaining Work
 
-### MAGIC
-```python
-class MagicFull(nn.Module):
-    def __init__(self, in_dim=5, hid=128, layers=3):
-        # Multi-layer GNN with attention
-        self.attn = nn.Linear(hid, 1)
-        ...
-    def forward(self, g, x):
-        # Attention-weighted aggregation
-        g.ndata['a'] = self.attn(h)
-        g.update_all(dgl.function.u_mul_v('h','a','m'), dgl.function.mean('m','h'))
-        ...
-```
+- Complete and validate the FLASH implementation.
+- Complete and validate the MAGIC implementation.
+- Run both GNN models on the same test graph.
+- Compare FLASH, MAGIC, and Random Forest using identical metrics.
+- Check whether the GNN models outperform the baseline.
+- Improve graph visualization using sampled subgraphs and malicious-node neighborhoods.
+- Analyze anomaly-score distributions.
+- Document the final experimental results.
+- Clarify the limitations of test-set threshold calibration.
+- Investigate additional edge and neighborhood features.
 
-Both models use a linear classifier head for node-level binary classification.
+---
 
-## Evaluation
+## Current Limitation
 
-Metrics computed on test set:
-- **Precision**: TP / (TP + FP)
-- **Recall**: TP / (TP + FN)
-- **F1-Score**: 2 * (Precision * Recall) / (Precision + Recall)
-- **ROC-AUC**: Area under ROC curve
-- **PR-AUC**: Area under Precision-Recall curve
-- **Confusion Matrix**: TP, FP, TN, FN counts
+The dataset has no separate labeled validation graph. The training graphs are benign-only, while malicious labels are available for the test graph.
 
-## Results
+Therefore:
 
-Current evaluation results (on test0):
-```
-FLASH: P=0.0000 R=0.0000 F1=0.0000 AUC=0.8196 PR=0.0001 TP=0 FP=74 FN=3 TN=344690
-MAGIC: P=0.0000 R=0.0000 F1=0.0000 AUC=0.1421 PR=0.0000 TP=0 FP=74 FN=3 TN=344690
-```
+- ROC-AUC and PR-AUC measure threshold-independent ranking quality;
+- precision, recall, F1-score, FPR, and the confusion matrix use a threshold calibrated on the test graph.
 
-*Note: Due to severe class imbalance (only 3 malicious nodes in test set) and the use of type==4 as proxy labels, standard metrics show challenges. FLASH achieves higher ROC-AUC but both models struggle with precision/recall on this label definition.*
-
-Visualizations and detailed analysis available in:
-- `COMPARISON_REPORT.md` - Detailed comparison
-- `FINAL_REPORT.md` - Complete project report
-- `out/FLASH_roc.png`, `out/MAGIC_roc.png`, `out/FLASH_pr.png`, `out/MAGIC_pr.png`
-
-## Documentation
-
-- **Papers**: `flash.pdf` (FLASH: A Comprehensive Approach to Intrusion Detection via Provenance Graph Representation Learning) and `usenixsecurity24-jia-zian.pdf` (MAGIC: Detecting Advanced Persistent Threats via Masked Graph Representation Learning)
-- **Extracted Text**: `docs/flash.txt`, `docs/usenixsecurity24-jia-zian.txt`
-- **Team Design**: `GNN_IDS_Team_Design-1 (1).docx`, `Project Overview - Cybersecurity and Network System (3).docx`
-
-## Future Improvements
-- Implement faithful semantic encoding (Word2Vec) as described in FLASH
-- Implement masked graph representation learning pretraining as in MAGIC
-- Use accurate ground-truth labels from dataset
-- Address class imbalance (oversampling, weighted loss, focal loss)
-- Add more comprehensive hyperparameter tuning
-- Implement ablation studies
-- Add temporal features from edge types
-
-## License
-This project is for educational/research purposes.
+This evaluation protocol should be reported clearly when comparing the models.
