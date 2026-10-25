@@ -260,3 +260,10 @@ Therefore:
 - precision, recall, F1-score, FPR, and the confusion matrix use a threshold calibrated on the test graph.
 
 This evaluation protocol should be reported clearly when comparing the models.
+
+## Documentation
+
+- [Data loader documentation](docs/data_loader.md)
+- [Metrics documentation](docs/metrics.md)
+- [Random Forest baseline](docs/baseline_rf.md)
+- [MAGIC model](docs/magic_model.md)
