@@ -45,6 +45,25 @@ from typing import List, Tuple, Optional
 import pickle
 
 
+# ── Device selection ──────────────────────────────────────────────────────────
+
+def get_device() -> torch.device:
+    """
+    Select the best available device.
+      Apple Silicon (M-series) → MPS
+      NVIDIA GPU               → CUDA
+      Fallback                 → CPU
+    """
+    if torch.backends.mps.is_available():
+        return torch.device('mps')
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    return torch.device('cpu')
+
+
+DEVICE = get_device()
+
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 NUM_NODE_TYPES = 5
@@ -171,13 +190,14 @@ class MAGICModel(nn.Module):
 
     def __init__(
         self,
-        in_dim:     int   = 10,    # use get_combined_node_features → 10 dims
-        hidden_dim: int   = 64,
-        num_layers: int   = 3,
-        num_heads:  int   = 1,
-        mask_rate:  float = 0.5,
-        k_neighbors: int  = 10,
-        dropout:    float = 0.1
+        in_dim:      int          = 10,
+        hidden_dim:  int          = 64,
+        num_layers:  int          = 3,
+        num_heads:   int          = 1,
+        mask_rate:   float        = 0.5,
+        k_neighbors: int          = 10,
+        dropout:     float        = 0.1,
+        device:      torch.device = None
     ):
         """
         Parameters
@@ -189,9 +209,11 @@ class MAGICModel(nn.Module):
         mask_rate    : fraction of nodes to mask during training (paper uses 0.5)
         k_neighbors  : k for KNN anomaly detection (paper uses 10)
         dropout      : dropout rate in GAT layers
+        device       : torch.device to use (None = auto-select MPS/CUDA/CPU)
         """
         super().__init__()
 
+        self.device      = device if device is not None else DEVICE
         self.in_dim      = in_dim
         self.hidden_dim  = hidden_dim
         self.num_layers  = num_layers
@@ -239,12 +261,13 @@ class MAGICModel(nn.Module):
         N = x.size(0)
         num_masked = max(1, int(N * self.mask_rate))
 
-        perm          = torch.randperm(N, device=x.device)
+        perm          = torch.randperm(N, device=self.device)
         masked_idx    = perm[:num_masked]
         unmasked_idx  = perm[num_masked:]
 
         x_masked = x.clone()
-        x_masked[masked_idx] = self.mask_token.expand(num_masked, -1)
+        x_masked[masked_idx] = self.mask_token.to(self.device).expand(
+            num_masked, -1)
 
         return x_masked, masked_idx, unmasked_idx
 
@@ -352,6 +375,7 @@ class MAGICModel(nn.Module):
 
         if verbose:
             print(f'Training MAGIC encoder...')
+            print(f'  Device     : {self.device}')
             print(f'  Graphs     : {len(train_graphs)}')
             print(f'  Epochs     : {epochs}')
             print(f'  in_dim     : {self.in_dim}')
@@ -359,18 +383,21 @@ class MAGICModel(nn.Module):
             print(f'  num_layers : {self.num_layers}')
             print(f'  mask_rate  : {self.mask_rate}')
 
+        # Move model to device
+        self.to(self.device)
         self.train()
+
+        # Pre-add self-loops once
+        train_graphs_sl = [dgl.add_self_loop(g) for g in train_graphs]
 
         for epoch in range(epochs):
             epoch_loss = 0.0
             n_batches  = 0
 
-            for graph in train_graphs:
-                # Add self-loops so every node has at least one incoming edge.
-                # GAT requires this — nodes with zero in-degree produce
-                # invalid attention outputs.
-                graph = dgl.add_self_loop(graph)
-                x = get_combined_node_features(graph)  # (N, 10)
+            for graph in train_graphs_sl:
+                # Move graph and features to device
+                graph = graph.to(self.device)
+                x = get_combined_node_features(graph).to(self.device)
 
                 optimizer.zero_grad()
                 _, loss = self.forward(graph, x, training=True)
@@ -419,8 +446,8 @@ class MAGICModel(nn.Module):
 
         with torch.no_grad():
             for i, graph in enumerate(train_graphs):
-                graph = dgl.add_self_loop(graph)
-                x   = get_combined_node_features(graph)
+                graph = dgl.add_self_loop(graph).to(self.device)
+                x   = get_combined_node_features(graph).to(self.device)
                 emb, _ = self.forward(graph, x, training=False)
                 all_embeddings.append(emb.cpu().numpy())
                 if verbose:
@@ -494,10 +521,11 @@ class MAGICModel(nn.Module):
             print(f'Running MAGIC inference on test graph '
                   f'({test_graph.num_nodes():,} nodes)...')
 
+        self.to(self.device)
         self.eval()
         with torch.no_grad():
-            test_graph = dgl.add_self_loop(test_graph)
-            x   = get_combined_node_features(test_graph)
+            test_graph = dgl.add_self_loop(test_graph).to(self.device)
+            x   = get_combined_node_features(test_graph).to(self.device)
             emb, _ = self.forward(test_graph, x, training=False)
             emb_np = emb.cpu().numpy()
 
@@ -582,13 +610,15 @@ if __name__ == '__main__':
     train_graphs, test_graph, test_labels = load_dataset(data_dir)
 
     # ── Train ─────────────────────────────────────────────────────────────────
+    print(f'\nUsing device: {DEVICE}')
     model = MAGICModel(
-        in_dim     = 10,    # combined features (5 attr + 5 type onehot)
+        in_dim     = 10,
         hidden_dim = 64,
         num_layers = 3,
         mask_rate  = 0.5,
         k_neighbors= 10,
-        dropout    = 0.1
+        dropout    = 0.1,
+        device     = DEVICE
     )
 
     loss_history = model.fit(

@@ -39,6 +39,25 @@ except ImportError:
     print('XGBoost not found — falling back to GradientBoostingClassifier.')
     print('Install with: pip install xgboost')
 
+
+# ── Device selection ──────────────────────────────────────────────────────────
+
+def get_device() -> torch.device:
+    """
+    Select the best available device.
+      Apple Silicon (M-series) → MPS
+      NVIDIA GPU               → CUDA
+      Fallback                 → CPU
+    """
+    if torch.backends.mps.is_available():
+        return torch.device('mps')
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    return torch.device('cpu')
+
+
+DEVICE = get_device()
+
 NUM_NODE_TYPES = 5
 NUM_EDGE_TYPES = 10
 
@@ -101,13 +120,15 @@ class FLASHModel:
 
     def __init__(
         self,
-        in_dim:      int   = 10,
-        hidden_dim:  int   = 64,
-        gnn_out_dim: int   = 64,
-        num_layers:  int   = 2,
-        dropout:     float = 0.3,
-        use_xgboost: bool  = True
+        in_dim:      int          = 10,
+        hidden_dim:  int          = 64,
+        gnn_out_dim: int          = 64,
+        num_layers:  int          = 2,
+        dropout:     float        = 0.3,
+        use_xgboost: bool         = True,
+        device:      torch.device = None
     ):
+        self.device      = device if device is not None else DEVICE
         self.in_dim      = in_dim
         self.hidden_dim  = hidden_dim
         self.gnn_out_dim = gnn_out_dim
@@ -228,14 +249,17 @@ class FLASHModel:
             print(f'  Class weights: ' +
                   ' '.join(f't{i}={w:.2f}' for i, w in enumerate(weights)))
 
+        self.encoder.to(self.device)
+        self._cls_head.to(self.device)
         self.encoder.train()
         self._cls_head.train()
 
         for epoch in range(epochs):
             epoch_loss = 0.0
             for g in train_graphs_sl:
-                x = get_combined_node_features(g)   # (N, 10)
-                y = g.ndata['type'].long()           # (N,)
+                # graph is already on device; move features too
+                x = get_combined_node_features(g).to(self.device)  # (N, 10)
+                y = g.ndata['type'].long().to(self.device)         # (N,)
 
                 optimizer.zero_grad()
                 emb    = self.encoder(g, x)          # (N, gnn_out_dim)
@@ -275,15 +299,20 @@ class FLASHModel:
 
         if verbose:
             print('Training FLASH model...')
+            print(f'  Device       : {self.device}')
             print(f'  in_dim       : {self.in_dim}')
             print(f'  gnn_out_dim  : {self.gnn_out_dim}')
             print(f'  num_layers   : {self.num_layers}')
             print(f'  classifier   : {self.classifier_name}')
 
-        # ── Add self-loops ONCE, reuse everywhere ──────────────────────────
+        # Move encoder to device
+        self.encoder.to(self.device)
+
+        # ── Add self-loops ONCE, move to device ────────────────────────────
         if verbose:
             print('\nPre-processing: adding self-loops...')
-        train_graphs_sl = [dgl.add_self_loop(g) for g in train_graphs]
+        train_graphs_sl = [dgl.add_self_loop(g).to(self.device)
+                           for g in train_graphs]
 
         # ── Step 1: Train GNN ──────────────────────────────────────────────
         # Build classification head before training
@@ -305,10 +334,10 @@ class FLASHModel:
 
         with torch.no_grad():
             for i, g in enumerate(train_graphs_sl):
-                x       = get_combined_node_features(g)   # (N, 10)
-                y       = g.ndata['type'].long().numpy()  # (N,)
-                gnn_emb = self.encoder(g, x).numpy()      # (N, 64)
-                raw_x   = x.numpy()                       # (N, 10)
+                x       = get_combined_node_features(g).to(self.device)
+                y       = g.ndata['type'].long().cpu().numpy()
+                gnn_emb = self.encoder(g, x).cpu().numpy()
+                raw_x   = x.cpu().numpy()
                 combined = np.concatenate([raw_x, gnn_emb], axis=1)  # (N, 74)
                 all_X.append(combined)
                 all_y.append(y)
@@ -329,9 +358,9 @@ class FLASHModel:
         with torch.no_grad():
             for i, (g, orig_g) in enumerate(
                     zip(train_graphs_sl, train_graphs)):
-                x          = get_combined_node_features(g)
-                node_types = g.ndata['type'].numpy()         # (N,)
-                gnn_emb    = self.encoder(g, x).numpy()      # (N, 64)
+                x          = get_combined_node_features(g).to(self.device)
+                node_types = g.ndata['type'].cpu().numpy()
+                gnn_emb    = self.encoder(g, x).cpu().numpy()
                 edge_hists = self._compute_edge_type_histograms(orig_g)
                              # shape (N, 10) — use original graph (no self-loops)
                              # so edge hist reflects real edges only
@@ -393,16 +422,17 @@ class FLASHModel:
             print(f'Running FLASH inference '
                   f'({test_graph.num_nodes():,} nodes)...')
 
-        g = dgl.add_self_loop(test_graph)
+        g = dgl.add_self_loop(test_graph).to(self.device)
 
+        self.encoder.to(self.device)
         self.encoder.eval()
         with torch.no_grad():
-            x       = get_combined_node_features(g)
-            raw_x   = x.numpy()                        # (N, 10)
-            gnn_emb = self.encoder(g, x).numpy()       # (N, 64)
+            x       = get_combined_node_features(g).to(self.device)
+            raw_x   = x.cpu().numpy()
+            gnn_emb = self.encoder(g, x).cpu().numpy()
 
         # ── Vectorised DB lookup ───────────────────────────────────────────
-        node_types = g.ndata['type'].numpy()            # (N,)
+        node_types = g.ndata['type'].cpu().numpy()      # (N,)
         edge_hists = self._compute_edge_type_histograms(test_graph)
         hist_q     = np.round(edge_hists, 1)            # (N, 10)
 
@@ -507,13 +537,15 @@ if __name__ == '__main__':
     print('Loading dataset...')
     train_graphs, test_graph, test_labels = load_dataset(data_dir)
 
+    print(f'\nUsing device: {DEVICE}')
     model = FLASHModel(
         in_dim      = 10,
         hidden_dim  = 64,
         gnn_out_dim = 64,
         num_layers  = 2,
         dropout     = 0.3,
-        use_xgboost = True
+        use_xgboost = True,
+        device      = DEVICE
     )
 
     model.fit(train_graphs, gnn_epochs=20, lr=0.001, verbose=True)
